@@ -1,6 +1,6 @@
 # Money Management reference
 
-Contents: 10. Risk-to-Reward 1:3 · 11. Risk 2% per trade · 12. Break-even at 2R · Leverage notes · Worked examples
+Contents: 11. Risk-to-Reward 1:3 · 12. Risk 2% per trade · 13. Break-even at 2R · Leverage notes · Worked examples
 
 These three rules are fixed. Setups adapt to them — never the other way around.
 
@@ -9,15 +9,15 @@ These three rules are fixed. Setups adapt to them — never the other way around
 ## Definitions
 
 - **R** (1R) = the distance from entry to stop loss: `R = |entry − SL|`.
-- Long: SL < entry. Short: SL > entry.
+- Long: SL at the **previous low** (below entry). Short: SL at the **previous high** (above entry) — the extreme of the 15m pullback that produced the trigger.
 
-## 10. Risk-to-Reward = 1:3
+## 11. Risk-to-Reward = 1:3
 
 - `TP = entry + 3R` (long) · `TP = entry − 3R` (short).
 - If a structural obstacle (HTF level, EMA200, pattern target, prior swing) sits between entry and the 3R TP, the trade is **not taken**. Do not shrink the target to fit — find a better entry (tighter SL) or skip.
 - With 1:3, the break-even win rate is 25% (before fees), so skipping marginal setups is cheap.
 
-## 11. Risk per trade = 2% of portfolio
+## 12. Risk per trade = 2% of portfolio
 
 - `risk_amount = balance × 0.02`
 - `position_size (units) = risk_amount / R`
@@ -27,9 +27,9 @@ These three rules are fixed. Setups adapt to them — never the other way around
 - For contracts (e.g. OKX futures), convert units to contracts with the instrument's contract size (e.g. BTC-USDT-SWAP: 1 contract = 0.01 BTC — verify on the exchange).
 - Fees and slippage slightly increase real risk; if precision matters, subtract round-trip fees from risk_amount first.
 
-## 12. Break-even at 2R
+## 13. Break-even at 2R
 
-- **Trigger:** price moves in the profit direction to **2R** from entry.
+- **Trigger:** price moves in the profit direction to **2R** from entry (the user's rule: "RR > 2, then set BE").
   - Long: `BE_trigger = entry + 2R` · Short: `BE_trigger = entry − 2R`.
 - **Action:** move SL to entry **plus a small buffer on the profit side**, so the worst case is a small win that covers fees.
   - Long: `new_SL = entry × (1 + buffer)` (above entry) · Short: `new_SL = entry × (1 − buffer)` (below entry).

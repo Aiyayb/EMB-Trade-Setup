@@ -13,7 +13,7 @@ Each candle = one period: open, high, low, close (OHLC).
 - **Wicks (shadows)** = rejected prices. A long lower wick = buyers rejected lower prices; long upper wick = sellers rejected higher prices.
 - **Body size vs. average** shows conviction. A large body closing near its extreme = strong momentum.
 
-Key single/multi-candle signals (supporting evidence — the entry trigger is still the engulfing):
+Key single/multi-candle signals (supporting evidence — the entry triggers are in §3):
 | Candle | Meaning | Where it matters |
 |--------|---------|------------------|
 | Hammer / bullish pin bar | Lower wick ≥ 2× body, small upper wick → rejection of lows | At support / Fib zone |
@@ -38,11 +38,25 @@ Always read candles in context: the same hammer means much more at a 0.618 Fib +
 - **Rectangle / range** — horizontal S/R; trade the edges or the breakout + retest.
 
 How patterns plug into the strategy:
-- Neckline / breakout level retests are strong **zones** (Step 2).
-- A pattern target that lands **before** 3R blocks the trade (Step 5).
+- Neckline / breakout level retests add confluence to the entry zone.
+- A pattern target that lands **before** 3R is an obstacle to flag (Sanity checks).
 - Pattern confirmation on HTF can supply the CHoCH/trend change.
 
-## 3. Bullish / Bearish Engulfing ★ (primary entry trigger)
+## 3. Entry triggers ★ (4H step 4 and 15m step 9)
+
+Any **one** of these three counts as the trigger, in the direction of the trade, on a **closed** candle, inside the zone:
+
+| Trigger | Long (bullish) | Short (bearish) |
+|---------|----------------|-----------------|
+| **Rejection + Engulfing** | Price wicks into the zone and is rejected (long lower wick, e.g. hammer/pin bar), then a Bullish Engulfing closes | Long upper wick rejection, then a Bearish Engulfing |
+| **Inside bar breakout** | An inside bar (high ≤ mother bar high, low ≥ mother bar low), then a candle **closes above the mother bar's high** | Close **below the mother bar's low** |
+| **Doji + Engulfing** | A Doji (body ≤ ~10% of range) at the zone, then a bullish candle whose body swallows the Doji and closes above the Doji's high | Mirror: bearish candle closing below the Doji's low |
+
+Analyzer conventions (mechanical approximations — use judgement on the chart): rejection = wick on the rejection side ≥ 50% of a pattern candle's range; Doji = body ≤ 10% of range; inside bar breakout uses the mother bar's range.
+
+On 15m the trigger should come as part of a **CHoCH-Retrace** (see §5) or after a visible reversal pattern (double bottom/top, inverse H&S/H&S, etc.).
+
+### Bullish / Bearish Engulfing (core of the triggers)
 
 **Bullish Engulfing**
 1. Previous candle is bearish (close < open).
@@ -54,9 +68,9 @@ How patterns plug into the strategy:
 **Bearish Engulfing** is the mirror: previous bullish, current bearish, `open ≥ prev.close` and `close ≤ prev.open`, larger body. Stronger if it closes below the previous candle's low.
 
 **Validity rules for this strategy**
-- Only counts **inside a zone** (Fib 0.5–0.786, EMA, structure) and **in the HTF bias direction**. An engulfing in no-man's land is noise.
-- The candle must be **closed**. An engulfing that is still forming can still fail.
-- **SL** goes beyond the engulfing pattern's extreme (lowest low of the two candles for bullish, highest high for bearish) or the invalidating swing, plus a small buffer.
+- Only counts **inside the zone** and **in the 4H trend direction**: on 4H, at the EMA 8/26/50/99/200 zone; on 15m, after Fib Time 0.5 has passed and the pullback has retraced ≥ 0.5 of the wave. A trigger in no-man's land is noise.
+- The candle must be **closed**. A trigger that is still forming can still fail.
+- **SL** goes at the **previous low** (long) / **previous high** (short) — the extreme of the 15m pullback.
 
 ## 4. Dow Theory
 
@@ -79,6 +93,12 @@ Both are defined by a **candle close** beyond a confirmed swing point.
 Using them:
 - **HTF:** latest event tells you whether the trend is intact (BOS) or in question (CHoCH).
 - **LTF trigger:** during a pullback into the HTF zone, the LTF is trending *against* the HTF. An LTF CHoCH back in the HTF direction is the signal the pullback is over — combine with the engulfing.
+
+**CHoCH-Retrace (the 15m entry structure the user focuses on)** — for a long (mirror for short):
+1. 4H is in its pullback/trigger phase, so 15m has been making LH/LL.
+2. 15m prints a **bullish CHoCH** — a close above the last LH. The move that made the CHoCH is the 15m "first wave" (step 5).
+3. Price **retraces** that wave into the Fib Retracement zone (≥ 0.5) after Fib Time 0.5 (steps 6–8).
+4. Wait for the **ENGULFING** (or another trigger from §3) there → entry, SL at the retrace low, TP 3R.
 - Internal vs. swing structure: only count breaks of meaningful swings on the timeframe you are reading; tiny internal breaks are noise.
 
 ## 6. Basic Elliott Wave — ABC correction
@@ -93,7 +113,7 @@ Impulse = 5 waves in the trend direction (1-2-3-4-5). After it, a **3-wave corre
 **Flat 3-3-5** — B retraces ~90–100%+ of A; C ends near or slightly past the end of A.
 
 Where ABC should end (confluence for a long after an uptrend impulse; mirror for shorts):
-- C terminating inside **Fib 0.5–0.786** of the prior impulse.
+- C terminating at or beyond **Fib 0.5** of the prior wave (the entry zone).
 - Near an EMA 50/99/200 or the prior BOS level.
 - Near a Fib Time window.
 
