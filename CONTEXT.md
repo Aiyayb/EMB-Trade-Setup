@@ -37,7 +37,7 @@ A candle whose wick on the rejection side (lower for longs, upper for shorts) is
 _Avoid_: Pin bar (a narrower pattern), wick
 
 **CHoCH-Retrace**:
-A 15m CHoCH in the trade direction after the Wave ends, followed by a retrace into the Entry Zone; recommended before entry but not required.
+A 15m structure where the Wave itself breaks structure with a CHoCH in the trade direction, then price retraces into the Entry Zone; recommended before entry but not required.
 _Avoid_: Structure shift, MSS
 
 **Sideway**:

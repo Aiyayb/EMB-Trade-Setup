@@ -193,6 +193,7 @@ def close_trade(t, i, bar, px, reason, cfg, exit_ts=None):
     t["fees"] = t["fee_in"] + fee_out
     t["pnl"] = d * t["units"] * (fill - t["entry_fill"]) - t["fees"]
     t["r_multiple"] = t["pnl"] / t["risk_amt"]
+    t["gross_r"] = d * (px - t["signal_price"]) / t["r"]
     return True
 
 
@@ -310,8 +311,8 @@ def run(bars4, bars15, cfg, probe=()):
         used.add(key)
         dir_ = "bullish" if long_ else "bearish"
         lst = choch[dir_]
-        k = bisect.bisect_right(lst, s1["i"])
-        choch_i = lst[k] if k < len(lst) and lst[k] <= i else None
+        k = bisect.bisect_right(lst, s0["i"])
+        choch_i = lst[k] if k < len(lst) and lst[k] <= s1["i"] else None
         trade.update({
             "htf_bias": setup["bias"], "htf_ema26": st4["ema"][26], "htf_ema50": st4["ema"][50],
             "htf_dist_pct": st4["dist"], "regime": regime_of(st4["dist"]),
@@ -323,7 +324,7 @@ def run(bars4, bars15, cfg, probe=()):
             "wave_to": bars15[s1["i"]]["t"], "wave_to_price": s1["price"],
             "wave_done": bars15[done_i]["t"], "wave_bars": leg, "bars_since_wave_end": since,
             "fib_050": fib05, "deepest_retrace": deepest,
-            "trigger": " + ".join(t["type"] for t in trig), "trigger_time": b["t"],
+            "trigger": " | ".join(t["type"] for t in trig), "trigger_time": b["t"],
             "choch_retrace": choch_i is not None, "choch_time": bars15[choch_i]["t"] if choch_i is not None else "",
             "year": int(b["t"][:4]),
         })
@@ -362,7 +363,7 @@ def snapshot(bars4, bars15, i, h, st4, zz, emas15):
 # ---------------------------------------------------------------- CLI
 
 TRADE_COLUMNS = [
-    "id", "side", "entry_time_utc", "entry_time_bkk", "exit_time_utc", "exit_reason", "r_multiple", "pnl",
+    "id", "side", "entry_time_utc", "entry_time_bkk", "exit_time_utc", "exit_reason", "r_multiple", "gross_r", "pnl",
     "equity_before", "equity_after", "signal_price", "entry_fill", "sl_initial", "tp", "be_trigger", "be_sl",
     "be_active", "exit_rule_price", "exit_fill", "r", "sl_dist_pct", "units", "notional", "risk_amt", "fees",
     "bars_held", "liq_flag", "year", "regime",
