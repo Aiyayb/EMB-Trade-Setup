@@ -36,6 +36,16 @@ python .claude/skills/backtest-setup/scripts/backtest.py --from 2021-10-01 --to 
 | `--be-buffer-pct` | 0.1 | BE stop = entry ± this % |
 | `--leverage` | 10 | only flags Trades whose SL is beyond the approx. liquidation distance |
 | `--out` | `backtests/<timestamp>-<side>` | output folder (gitignored) |
+| `--entry-tf` | 15m | Lever: Entry Timeframe `15m` or `1h` (every entry rule unchanged; Trades still managed on 15m bars) |
+| `--sl-atr K` | 0 | Lever: SL = pullback extreme ∓ K × ATR(14) of the Entry Timeframe |
+| `--no-be` | off | Lever: never move SL to Break-even |
+| `--min-trend-pct X` | off | Filter: 4H EMA8–EMA200 distance ≥ X% at entry |
+| `--d1-align` | off | Filter: 1D EMA26/50 agrees with the 4H trend |
+| `--drop-doji` | off | Filter: skip Trades whose only Triggers are Doji + Engulfing |
+| `--min-sl-pct Y` | off | Filter: skip Trades whose SL is closer than Y% of price |
+| `--holdout` | off | needed for any Variant run whose window reaches 2025-01-01+ (refused otherwise) |
+
+With no Lever set the run is the **Baseline**. A Filter never changes the Trades it keeps: a filtered Trade still runs as a shadow (uses its Wave, blocks the open-Trade slot) but is not booked, so a Filter's Trades are always a subset of the unfiltered run.
 
 Runs in a few seconds. To test costs, run again with `--fee-pct 0 --slippage-pct 0` (or compare the gross vs net columns already in every report).
 
@@ -46,9 +56,25 @@ Runs in a few seconds. To test costs, run again with `--fee-pct 0 --slippage-pct
 - `report.html` — self-contained page: stat tiles, equity curve (log), cumulative R gross vs net, breakdown tables, full Trade Log, Assumptions. View it with the `backtest-reports` preview server (`.claude/launch.json`) at `http://localhost:8765/<run folder>/report.html`, or open the file directly.
 - `assumptions.md` — parameters and every rule interpretation the run used.
 
+## Variants, the Acceptance Bar and the Holdout Period
+
+Improving the strategy follows `docs/adr/0001-evaluate-variants-against-acceptance-bar.md` (terms: Baseline, Variant, Lever, Filter, Acceptance Bar, Tuning Period, Holdout Period, Finalist, Search Budget in `CONTEXT.md`). Use `variants.py`, not ad-hoc runs:
+
+```bash
+python .claude/skills/backtest-setup/scripts/variants.py              # Baseline + all registered Variants, Tuning Period
+python .claude/skills/backtest-setup/scripts/variants.py --only V13   # just the new ones
+python .claude/skills/backtest-setup/scripts/variants.py --holdout V13  # the single Finalist run, once ever
+```
+
+- Variants are registered in `VARIANTS` in `variants.py` **before** they are run; append only, never edit a row that has run. The Search Budget is 20 rows; past it, the Variant approach has failed.
+- Each Variant is sized by `risk.py`: the largest risk in {0.5, 0.75, 1, 1.5, 2}% whose realized and bootstrap 95th-percentile Max Drawdown are both < 15%.
+- Pass = PF ≥ 1.5 net, Max Drawdown < 15% at that risk, ≥ 100 Trades (Tuning Period). Finalist = highest PF among passes; within 0.1 PF, fewer Levers wins.
+- `--holdout` re-checks that the id is the Finalist, runs it on 2025-01-01 → end at its Tuning risk, and writes `docs/holdout-ledger.json`; a second Holdout run is refused. Never tune on, or peek at, the Holdout Period any other way.
+- Output: `backtests/variants-<timestamp>/leaderboard.html` (+ `.json`) linking each Variant's own report.
+
 ## Presenting results
 
-Lead with the verdict in R: trades, win rate, **net and gross expectancy**, profit factor, max drawdown, final equity. Then point out what stands out in the breakdowns — Long vs Short, stable or unstable across years, Regime, whether CHoCH-Retrace trades do better, cost drag (gross − net expectancy ≈ costs per Trade in R; tight 15m stops make costs large in R). Link the report. Don't suggest rule changes as if they were the user's rules; if the user wants to experiment, keep the rules fixed on the first 3 years and confirm on the last 2 (in-sample / out-of-sample) and say so.
+Lead with the verdict in R: trades, win rate (Win = TP exit only), **net and gross expectancy**, profit factor, max drawdown, final equity. Then point out what stands out in the breakdowns — Long vs Short, stable or unstable across years, Regime, whether CHoCH-Retrace trades do better, cost drag (gross − net expectancy ≈ costs per Trade in R; tight 15m stops make costs large in R). Link the report. Don't suggest rule changes as if they were the user's rules; if the user wants to experiment, do it as registered Variants on the Tuning Period (section above).
 
 ## Explaining a single backtest trade
 

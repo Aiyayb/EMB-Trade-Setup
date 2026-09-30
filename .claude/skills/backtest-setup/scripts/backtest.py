@@ -2,12 +2,19 @@
 backtest.py - replay the trade-setup strategy (Execution 1 Long / Execution 2 Short) over
 4H + 15m candles, bar by bar with no look-ahead (stdlib only).
 
+With no Lever options this is the Baseline. Levers (see CONTEXT.md, docs/adr/0001) turn it into a
+Variant: --entry-tf 1h, --sl-atr K, --no-be, and the Filters --min-trend-pct, --d1-align,
+--drop-doji, --min-sl-pct. A Filter never changes the Trades it keeps: a filtered Trade still runs
+as a shadow (it uses its Wave and blocks the one open-Trade slot until it would have exited) but is
+not booked. Runs that reach the Holdout Period with any Lever set need --holdout.
+
 Rules come from the trade-setup skill; indicator logic is imported from its analyze_chart.py so
 the backtest and the chart read can never drift apart (parity_check.py verifies this).
 
 Usage:
   python backtest.py --from 2021-10-01 --to 2026-09-26
   python backtest.py --from 2024-01-01 --to 2024-12-31 --side long --balance 5000
+  python backtest.py --from 2021-10-01 --to 2024-12-31 --entry-tf 1h --sl-atr 0.25
 """
 
 import argparse
@@ -22,7 +29,10 @@ sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "..", "trade-setup"
 import analyze_chart as ac  # noqa: E402
 
 M15 = 15 * 60 * 1000
+H1 = 3600 * 1000
 H4 = 4 * 3600 * 1000
+D1 = 24 * 3600 * 1000
+ENTRY_TF_MS = {"15m": M15, "1h": H1}
 UTC = timezone.utc
 BKK = timezone(timedelta(hours=7))
 ROOT = os.path.normpath(os.path.join(HERE, "..", "..", "..", ".."))
@@ -31,7 +41,13 @@ DEFAULTS = {
     "balance": 10000.0, "risk_pct": 2.0, "rr": 3.0, "be_at": 2.0, "be_buffer_pct": 0.1,
     "fee_pct": 0.05, "slippage_pct": 0.02, "leverage": 10.0, "mmr_pct": 0.5,
     "side": "both", "zigzag": 10, "swing": 5, "start": None, "end": None,
+    # Levers: at these values the engine is the Baseline
+    "entry_tf": "15m", "sl_atr": 0.0, "atr_period": 14,
+    "min_trend_pct": None, "d1_align": False, "drop_doji": False, "min_sl_pct": None,
 }
+LEVER_DEFAULTS = {"entry_tf": "15m", "sl_atr": 0.0, "be_at": 2.0, "min_trend_pct": None,
+                  "d1_align": False, "drop_doji": False, "min_sl_pct": None}
+HOLDOUT_START = int(datetime(2025, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
 
 REGIMES = [(10.0, "trend >=10%"), (5.0, "trend 5-10%"), (ac.SIDEWAY_PCT, "trend 3-5%")]
 
@@ -105,6 +121,51 @@ def fmt_ts(ms, tz=UTC):
     return datetime.fromtimestamp(ms / 1000, tz).strftime("%Y-%m-%d %H:%M")
 
 
+def levers(cfg):
+    """The Levers a config sets away from the Baseline, as {name: value}."""
+    return {k: cfg.get(k, v) for k, v in LEVER_DEFAULTS.items() if cfg.get(k, v) != v}
+
+
+def touches_holdout(cfg):
+    return cfg.get("end") is None or cfg["end"] >= HOLDOUT_START
+
+
+def atr(bars, n):
+    """Wilder ATR(n); None until n true ranges are available."""
+    out = [None] * len(bars)
+    if len(bars) <= n:
+        return out
+    tr = [bars[0]["h"] - bars[0]["l"]] + [
+        max(b["h"] - b["l"], abs(b["h"] - p["c"]), abs(b["l"] - p["c"])) for p, b in zip(bars, bars[1:])]
+    a = sum(tr[1:n + 1]) / n
+    out[n] = a
+    for i in range(n + 1, len(bars)):
+        a = (a * (n - 1) + tr[i]) / n
+        out[i] = a
+    return out
+
+
+def d1_bias(bars1d):
+    """1D trend per daily bar: 'long' when EMA26 > EMA50, 'short' when below, None during warm-up."""
+    closes = [b["c"] for b in bars1d]
+    e26, e50 = ac.ema(closes, 26), ac.ema(closes, 50)
+    return [None if a is None or b is None else "long" if a > b else "short" for a, b in zip(e26, e50)]
+
+
+def filter_reasons(cfg, st4, setup, d1, trig, trade):
+    """Filters that reject this Trade (empty list = keep it)."""
+    out = []
+    if cfg["min_trend_pct"] is not None and st4["dist"] < cfg["min_trend_pct"]:
+        out.append("trend")
+    if cfg["d1_align"] and d1 != setup["bias"]:
+        out.append("d1")
+    if cfg["drop_doji"] and all(t["type"].startswith("Doji") for t in trig):
+        out.append("doji")
+    if cfg["min_sl_pct"] is not None and trade["sl_dist_pct"] < cfg["min_sl_pct"]:
+        out.append("min_sl")
+    return out
+
+
 # ---------------------------------------------------------------- 4H: HTF Setup state machine
 
 def htf_pass(bars4, cfg):
@@ -157,7 +218,7 @@ def htf_pass(bars4, cfg):
 
 # ---------------------------------------------------------------- trade management
 
-def open_trade(long_, i, bar, sl, equity, cfg):
+def open_trade(long_, i, bar, sl, equity, cfg, bar_ms=M15):
     d = 1 if long_ else -1
     signal = bar["c"]
     r = abs(signal - sl)
@@ -168,16 +229,16 @@ def open_trade(long_, i, bar, sl, equity, cfg):
     sl_pct = r / signal * 100
     return {
         "side": "LONG" if long_ else "SHORT", "d": d, "entry_i": i,
-        "entry_time_utc": fmt_ts(bar["ts"] + M15), "entry_time_bkk": fmt_ts(bar["ts"] + M15, BKK),
+        "entry_time_utc": fmt_ts(bar["ts"] + bar_ms), "entry_time_bkk": fmt_ts(bar["ts"] + bar_ms, BKK),
         "signal_price": signal, "entry_fill": fill, "sl_initial": sl, "sl": sl, "r": r,
         "sl_dist_pct": sl_pct,
         "tp": signal + d * cfg["rr"] * r,
-        "be_trigger": signal + d * cfg["be_at"] * r,
+        "be_trigger": signal + d * cfg["be_at"] * r if cfg["be_at"] is not None else None,
         "be_sl": signal * (1 + d * cfg["be_buffer_pct"] / 100),
         "units": units, "notional": units * fill, "risk_amt": risk_amt, "equity_before": equity,
         "fee_in": units * fill * fee,
         "liq_flag": sl_pct > 100 / cfg["leverage"] - cfg["mmr_pct"],
-        "be_pending": False, "be_active": False,
+        "be_pending": False, "be_active": False, "filtered": "",
     }
 
 
@@ -199,7 +260,7 @@ def close_trade(t, i, bar, px, reason, cfg, exit_ts=None):
 
 def manage(t, i, bar, cfg):
     """Advance an open Trade by one 15m bar. SL is checked before TP; BE applies from the bar
-    after 2R is reached. Returns True when the Trade closed on this bar."""
+    after 2R is reached (never, when be_at is None). Returns True when the Trade closed on this bar."""
     d = t["d"]
     if t["be_pending"]:
         t["sl"], t["be_active"], t["be_pending"] = t["be_sl"], True, False
@@ -208,7 +269,7 @@ def manage(t, i, bar, cfg):
         return close_trade(t, i, bar, px, "BE" if t["be_active"] else "SL", cfg)
     if (bar["h"] >= t["tp"]) if d == 1 else (bar["l"] <= t["tp"]):
         return close_trade(t, i, bar, t["tp"], "TP", cfg)
-    if not t["be_active"] and ((bar["h"] >= t["be_trigger"]) if d == 1 else (bar["l"] <= t["be_trigger"])):
+    if t["be_trigger"] is not None and not t["be_active"] and ((bar["h"] >= t["be_trigger"]) if d == 1 else (bar["l"] <= t["be_trigger"])):
         t["be_pending"] = True
     return False
 
@@ -227,115 +288,153 @@ def wave_geometry(s0, s1):
     return hi, lo, hi - lo
 
 
-def run(bars4, bars15, cfg, probe=()):
-    """Walk every 15m bar in time. Returns (trades, info); info['snapshots'] holds engine state at `probe` indices."""
+def run(bars4, bars15, cfg, probe=(), bars1h=None, bars1d=None):
+    """Walk every 15m bar in time; entry logic runs whenever an Entry Timeframe bar closes and open
+    Trades are always managed on 15m bars. Returns (trades, info); info['skipped'] holds the shadow
+    Trades that Filters rejected and info['snapshots'] the engine state at `probe` indices."""
     cfg = dict(DEFAULTS, **cfg)
+    if cfg["entry_tf"] == "1h":
+        if bars1h is None:
+            raise ValueError("entry_tf 1h needs bars1h")
+        bars_e, e_ms = bars1h, H1
+    else:
+        bars_e, e_ms = bars15, M15
+    if probe and bars_e is not bars15:
+        raise ValueError("probe snapshots need entry_tf 15m")
+    if cfg["d1_align"] and bars1d is None:
+        raise ValueError("d1_align needs bars1d")
     states4 = htf_pass(bars4, cfg)
-    swings = ac.label_dow(ac.find_swings(bars15, cfg["swing"]))
-    events, _ = ac.smc_events(bars15, swings)
+    swings = ac.label_dow(ac.find_swings(bars_e, cfg["swing"]))
+    events, _ = ac.smc_events(bars_e, swings)
     choch = {"bullish": [], "bearish": []}
     for ev in events:
         if ev["kind"] == "CHoCH":
             choch[ev["dir"]].append(ev["i"])
+    atr_e = atr(bars_e, cfg["atr_period"]) if cfg["sl_atr"] else None
+    bias1d = d1_bias(bars1d) if cfg["d1_align"] else None
     emas15 = {n: ac.ema([b["c"] for b in bars15], n) for n in ac.EMA_PERIODS} if probe else None
 
     start_ts = cfg["start"] if cfg["start"] is not None else bars15[0]["ts"]
     end_ts = cfg["end"] if cfg["end"] is not None else bars15[-1]["ts"]
     probe = set(probe)
-    zz = Zigzag(bars15, cfg["zigzag"])
+    zz = Zigzag(bars_e, cfg["zigzag"])
     equity = cfg["balance"]
-    trades, trade = [], None
+    trades, skipped, trade = [], [], None
     used, dead = set(), set()
     ext_key = ext = ext_last = None
     snapshots = {}
-    h = -1
+    h = e = d = -1
+
+    def book(t):
+        nonlocal equity
+        if t["filtered"]:
+            skipped.append(t)
+            return
+        equity += t["pnl"]
+        t["equity_after"] = equity
+        trades.append(t)
 
     for i, b in enumerate(bars15):
         close_ts = b["ts"] + M15
         while h + 1 < len(bars4) and bars4[h + 1]["ts"] + H4 <= close_ts:
             h += 1
-        zz.update(i)
+        if bias1d:
+            while d + 1 < len(bars1d) and bars1d[d + 1]["ts"] + D1 <= close_ts:
+                d += 1
+        closed = []
+        while e + 1 < len(bars_e) and bars_e[e + 1]["ts"] + e_ms <= close_ts:
+            e += 1
+            zz.update(e)
+            closed.append(e)
         st4 = states4[h] if h >= 0 else None
 
         if trade and manage(trade, i, b, cfg):
-            equity += trade["pnl"]
-            trade["equity_after"] = equity
-            trades.append(trade)
+            book(trade)
             trade = None
 
         if i in probe:
             snapshots[i] = snapshot(bars4, bars15, i, h, st4, zz, emas15)
 
         setup = st4["setup"] if st4 else None
-        if not setup or trade or not (start_ts <= b["ts"] <= end_ts):
-            continue
-        if cfg["side"] != "both" and setup["bias"] != cfg["side"]:
+        if not setup or (cfg["side"] != "both" and setup["bias"] != cfg["side"]):
             continue
         long_ = setup["bias"] == "long"
-        j = last_wave(zz.pts, long_)
-        if j is None:
-            continue
-        s0, s1 = zz.pts[j - 1], zz.pts[j]
-        key = (s0["i"], s1["i"], setup["bias"])
-        if key in used or key in dead:
-            continue
-        done_i = zz.pts[j + 1]["born"]
-        if bars15[done_i]["ts"] < setup["trig_close_ts"]:
-            continue
+        for k in closed:
+            eb = bars_e[k]
+            if trade or not (start_ts <= eb["ts"] <= end_ts):
+                continue
+            j = last_wave(zz.pts, long_)
+            if j is None:
+                continue
+            s0, s1 = zz.pts[j - 1], zz.pts[j]
+            key = (s0["i"], s1["i"], setup["bias"])
+            if key in used or key in dead:
+                continue
+            done_i = zz.pts[j + 1]["born"]
+            if bars_e[done_i]["ts"] < setup["trig_close_ts"]:
+                continue
 
-        hi, lo, rng = wave_geometry(s0, s1)
-        if rng <= 0:
-            continue
-        if ext_key != key:
-            ext_key, ext = key, pullback_extreme(bars15, s1["i"] + 1, i, long_, hi if long_ else lo)
-        else:
-            ext = (min if long_ else max)(ext, pullback_extreme(bars15, ext_last + 1, i, long_, ext))
-        ext_last = i
-        deepest = (hi - ext) / rng if long_ else (ext - lo) / rng
-        if deepest > 1.0:
-            dead.add(key)
-            continue
-        since, leg = i - s1["i"], s1["i"] - s0["i"]
-        if since < 0.5 * leg or deepest < ac.MIN_RETRACE:
-            continue
-        fib05 = hi - 0.5 * rng if long_ else lo + 0.5 * rng
-        trig = [t for t in triggers_at(bars15, i) if is_valid_trigger(t, long_) and
-                (t["pattern_low"] <= fib05 if long_ else t["pattern_high"] >= fib05)]
-        if not trig:
-            continue
-        sl = ext
-        if (b["c"] - sl if long_ else sl - b["c"]) <= 0:
-            continue
+            hi, lo, rng = wave_geometry(s0, s1)
+            if rng <= 0:
+                continue
+            if ext_key != key:
+                ext_key, ext = key, pullback_extreme(bars_e, s1["i"] + 1, k, long_, hi if long_ else lo)
+            else:
+                ext = (min if long_ else max)(ext, pullback_extreme(bars_e, ext_last + 1, k, long_, ext))
+            ext_last = k
+            deepest = (hi - ext) / rng if long_ else (ext - lo) / rng
+            if deepest > 1.0:
+                dead.add(key)
+                continue
+            since, leg = k - s1["i"], s1["i"] - s0["i"]
+            if since < 0.5 * leg or deepest < ac.MIN_RETRACE:
+                continue
+            fib05 = hi - 0.5 * rng if long_ else lo + 0.5 * rng
+            trig = [t for t in triggers_at(bars_e, k) if is_valid_trigger(t, long_) and
+                    (t["pattern_low"] <= fib05 if long_ else t["pattern_high"] >= fib05)]
+            if not trig:
+                continue
+            sl = ext
+            if cfg["sl_atr"]:
+                if atr_e[k] is None:
+                    continue
+                sl = ext - cfg["sl_atr"] * atr_e[k] if long_ else ext + cfg["sl_atr"] * atr_e[k]
+            if (eb["c"] - sl if long_ else sl - eb["c"]) <= 0:
+                continue
 
-        trade = open_trade(long_, i, b, sl, equity, cfg)
-        used.add(key)
-        dir_ = "bullish" if long_ else "bearish"
-        lst = choch[dir_]
-        k = bisect.bisect_right(lst, s0["i"])
-        choch_i = lst[k] if k < len(lst) and lst[k] <= s1["i"] else None
-        trade.update({
-            "htf_bias": setup["bias"], "htf_ema26": st4["ema"][26], "htf_ema50": st4["ema"][50],
-            "htf_dist_pct": st4["dist"], "regime": regime_of(st4["dist"]),
-            "htf_wave_from": setup["wave_from"][0], "htf_wave_from_price": setup["wave_from"][1],
-            "htf_wave_to": setup["wave_to"][0], "htf_wave_to_price": setup["wave_to"][1],
-            "htf_emas_touched": "/".join(map(str, setup["emas_touched"])),
-            "htf_trigger": setup["trig_type"], "htf_trigger_time": setup["trig_time"],
-            "wave_from": bars15[s0["i"]]["t"], "wave_from_price": s0["price"],
-            "wave_to": bars15[s1["i"]]["t"], "wave_to_price": s1["price"],
-            "wave_done": bars15[done_i]["t"], "wave_bars": leg, "bars_since_wave_end": since,
-            "fib_050": fib05, "deepest_retrace": deepest,
-            "trigger": " | ".join(t["type"] for t in trig), "trigger_time": b["t"],
-            "choch_retrace": choch_i is not None, "choch_time": bars15[choch_i]["t"] if choch_i is not None else "",
-            "year": int(b["t"][:4]),
-        })
+            trade = open_trade(long_, i, eb, sl, equity, cfg, e_ms)
+            used.add(key)
+            d1 = bias1d[d] if bias1d and d >= 0 else None
+            trade["filtered"] = "/".join(filter_reasons(cfg, st4, setup, d1, trig, trade))
+            dir_ = "bullish" if long_ else "bearish"
+            lst = choch[dir_]
+            c = bisect.bisect_right(lst, s0["i"])
+            choch_i = lst[c] if c < len(lst) and lst[c] <= s1["i"] else None
+            trade.update({
+                "entry_tf": cfg["entry_tf"], "d1_bias": d1 or "",
+                "htf_bias": setup["bias"], "htf_ema26": st4["ema"][26], "htf_ema50": st4["ema"][50],
+                "htf_dist_pct": st4["dist"], "regime": regime_of(st4["dist"]),
+                "htf_wave_from": setup["wave_from"][0], "htf_wave_from_price": setup["wave_from"][1],
+                "htf_wave_to": setup["wave_to"][0], "htf_wave_to_price": setup["wave_to"][1],
+                "htf_emas_touched": "/".join(map(str, setup["emas_touched"])),
+                "htf_trigger": setup["trig_type"], "htf_trigger_time": setup["trig_time"],
+                "wave_from": bars_e[s0["i"]]["t"], "wave_from_price": s0["price"],
+                "wave_to": bars_e[s1["i"]]["t"], "wave_to_price": s1["price"],
+                "wave_done": bars_e[done_i]["t"], "wave_bars": leg, "bars_since_wave_end": since,
+                "fib_050": fib05, "deepest_retrace": deepest, "pullback_extreme": ext,
+                "atr": atr_e[k] if atr_e else None,
+                "trigger": " | ".join(t["type"] for t in trig), "trigger_time": eb["t"],
+                "choch_retrace": choch_i is not None,
+                "choch_time": bars_e[choch_i]["t"] if choch_i is not None else "",
+                "year": int(eb["t"][:4]),
+            })
 
     if trade:
         last = bars15[-1]
         close_trade(trade, len(bars15) - 1, last, last["c"], "END", cfg)
-        equity += trade["pnl"]
-        trade["equity_after"] = equity
-        trades.append(trade)
-    return trades, {"snapshots": snapshots, "states4": states4, "cfg": cfg, "final_equity": equity}
+        book(trade)
+    return trades, {"snapshots": snapshots, "states4": states4, "cfg": cfg, "final_equity": equity,
+                    "skipped": skipped}
 
 
 def snapshot(bars4, bars15, i, h, st4, zz, emas15):
@@ -363,14 +462,15 @@ def snapshot(bars4, bars15, i, h, st4, zz, emas15):
 # ---------------------------------------------------------------- CLI
 
 TRADE_COLUMNS = [
-    "id", "side", "entry_time_utc", "entry_time_bkk", "exit_time_utc", "exit_reason", "r_multiple", "gross_r", "pnl",
+    "id", "side", "entry_tf", "entry_time_utc", "entry_time_bkk", "exit_time_utc", "exit_reason", "r_multiple", "gross_r", "pnl",
     "equity_before", "equity_after", "signal_price", "entry_fill", "sl_initial", "tp", "be_trigger", "be_sl",
     "be_active", "exit_rule_price", "exit_fill", "r", "sl_dist_pct", "units", "notional", "risk_amt", "fees",
     "bars_held", "liq_flag", "year", "regime",
     "htf_bias", "htf_ema26", "htf_ema50", "htf_dist_pct", "htf_wave_from", "htf_wave_from_price",
     "htf_wave_to", "htf_wave_to_price", "htf_emas_touched", "htf_trigger", "htf_trigger_time",
     "wave_from", "wave_from_price", "wave_to", "wave_to_price", "wave_done", "wave_bars",
-    "bars_since_wave_end", "fib_050", "deepest_retrace", "trigger", "trigger_time", "choch_retrace", "choch_time",
+    "bars_since_wave_end", "fib_050", "deepest_retrace", "pullback_extreme", "atr", "d1_bias",
+    "trigger", "trigger_time", "choch_retrace", "choch_time", "filtered",
 ]
 
 
@@ -396,12 +496,45 @@ def parse_date(s, end=False):
     return int(dt.timestamp() * 1000)
 
 
+def add_lever_args(ap):
+    g = ap.add_argument_group("Levers (all off = Baseline)")
+    g.add_argument("--entry-tf", choices=sorted(ENTRY_TF_MS), default="15m", help="Entry Timeframe")
+    g.add_argument("--sl-atr", type=float, default=0.0,
+                   help="SL buffer beyond the pullback extreme, x ATR(14) of the Entry Timeframe")
+    g.add_argument("--no-be", action="store_true", help="never move SL to break-even")
+    g.add_argument("--min-trend-pct", type=float, help="Filter: 4H EMA8-EMA200 distance at entry >= this %%")
+    g.add_argument("--d1-align", action="store_true", help="Filter: 1D EMA26/50 must agree with the 4H trend")
+    g.add_argument("--drop-doji", action="store_true", help="Filter: skip Trades whose only Triggers are Doji + Engulfing")
+    g.add_argument("--min-sl-pct", type=float, help="Filter: skip Trades whose SL is closer than this %% of price")
+    ap.add_argument("--holdout", action="store_true",
+                    help="allow a Variant to run on the Holdout Period (2025-01-01 onward) - see docs/adr/0001")
+
+
+def lever_cfg(a):
+    return {"entry_tf": a.entry_tf, "sl_atr": a.sl_atr, "be_at": None if a.no_be else DEFAULTS["be_at"],
+            "min_trend_pct": a.min_trend_pct, "d1_align": a.d1_align, "drop_doji": a.drop_doji,
+            "min_sl_pct": a.min_sl_pct}
+
+
+def load_bars(cfg, file_4h=None, file_15m=None, file_1h=None, file_1d=None):
+    """Load the candle files a config needs: {bars4, bars15, bars1h, bars1d}."""
+    data = os.path.join(ROOT, "data")
+    return {
+        "bars4": ac.load(file_4h or os.path.join(data, "BTCUSDT_4H.csv")),
+        "bars15": ac.load(file_15m or os.path.join(data, "BTCUSDT_15m.csv")),
+        "bars1h": ac.load(file_1h or os.path.join(data, "BTCUSDT_1H.csv")) if cfg.get("entry_tf") == "1h" else None,
+        "bars1d": ac.load(file_1d or os.path.join(data, "BTCUSDT_1D.csv")) if cfg.get("d1_align") else None,
+    }
+
+
 def main():
     ap = argparse.ArgumentParser(description="Backtest the trade-setup strategy on 4H + 15m candles")
     ap.add_argument("--from", dest="start", default="2021-10-01", help="first entry date (UTC), YYYY-MM-DD")
     ap.add_argument("--to", dest="end", help="last entry date (UTC), YYYY-MM-DD; default = end of data")
     ap.add_argument("--file-4h", default=os.path.join(ROOT, "data", "BTCUSDT_4H.csv"))
     ap.add_argument("--file-15m", default=os.path.join(ROOT, "data", "BTCUSDT_15m.csv"))
+    ap.add_argument("--file-1h", default=os.path.join(ROOT, "data", "BTCUSDT_1H.csv"))
+    ap.add_argument("--file-1d", default=os.path.join(ROOT, "data", "BTCUSDT_1D.csv"))
     ap.add_argument("--balance", type=float, default=DEFAULTS["balance"])
     ap.add_argument("--risk-pct", type=float, default=DEFAULTS["risk_pct"])
     ap.add_argument("--fee-pct", type=float, default=DEFAULTS["fee_pct"], help="per side")
@@ -410,25 +543,29 @@ def main():
     ap.add_argument("--leverage", type=float, default=DEFAULTS["leverage"], help="only for the liquidation flag")
     ap.add_argument("--side", choices=["long", "short", "both"], default="both")
     ap.add_argument("--out", help="output folder; default backtests/<timestamp>-<side>")
+    add_lever_args(ap)
     a = ap.parse_args()
 
     cfg = {"balance": a.balance, "risk_pct": a.risk_pct, "fee_pct": a.fee_pct, "slippage_pct": a.slippage_pct,
            "be_buffer_pct": a.be_buffer_pct, "leverage": a.leverage, "side": a.side,
-           "start": parse_date(a.start), "end": parse_date(a.end, end=True)}
-    bars4, bars15 = ac.load(a.file_4h), ac.load(a.file_15m)
-    trades, info = run(bars4, bars15, cfg)
+           "start": parse_date(a.start), "end": parse_date(a.end, end=True), **lever_cfg(a)}
+    if levers(cfg) and touches_holdout(cfg) and not a.holdout:
+        ap.error("this Variant's window reaches the Holdout Period (2025-01-01 onward); end it with "
+                 "--to 2024-12-31, or pass --holdout for the single Finalist run (docs/adr/0001)")
+    bars = load_bars(cfg, a.file_4h, a.file_15m, a.file_1h, a.file_1d)
+    trades, info = run(bars["bars4"], bars["bars15"], cfg, bars1h=bars["bars1h"], bars1d=bars["bars1d"])
 
     out = a.out or os.path.join(ROOT, "backtests", datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + a.side)
     os.makedirs(out, exist_ok=True)
     write_trades(trades, os.path.join(out, "trades.csv"))
     try:
         import report
-        report.write_all(out, trades, info, bars4, bars15, vars(a))
+        report.write_all(out, trades, info, bars["bars4"], bars["bars15"], vars(a))
     except ImportError:
         pass
     n = len(trades)
-    wins = sum(1 for t in trades if t["pnl"] > 0)
-    print(f"trades {n} | win rate {wins / n * 100 if n else 0:.1f}% | "
+    wins = sum(1 for t in trades if t["exit_reason"] == "TP")
+    print(f"trades {n} (filtered {len(info['skipped'])}) | win rate {wins / n * 100 if n else 0:.1f}% | "
           f"expectancy {sum(t['r_multiple'] for t in trades) / n if n else 0:+.3f}R | "
           f"equity {cfg['balance']:,.2f} -> {info['final_equity']:,.2f}")
     print(f"output: {out}")

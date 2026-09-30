@@ -169,5 +169,71 @@ class TestTradeManagement(unittest.TestCase):
         self.assertTrue(self.long_trade(c, sl=90)["liq_flag"])    # 10% > 9.5%
 
 
+class TestLevers(unittest.TestCase):
+    def cfg(self, **kw):
+        c = dict(CFG, fee_pct=0.0, slippage_pct=0.0)
+        c.update(kw)
+        return c
+
+    def test_no_be_rides_to_tp(self):
+        c = self.cfg(be_at=None)
+        t = bt.open_trade(True, 0, bar(100, 100, 100, 100), 90, 10000, c)
+        self.assertIsNone(t["be_trigger"])
+        self.assertFalse(bt.manage(t, 1, bar(100, 125, 99, 120), c))
+        self.assertFalse(bt.manage(t, 2, bar(120, 121, 100.05, 101), c))  # would have been a BE exit
+        self.assertTrue(bt.manage(t, 3, bar(101, 131, 95, 129), c))
+        self.assertEqual(t["exit_reason"], "TP")
+
+    def test_atr_wilder(self):
+        bars = [bar(10, 11, 9, 10) for _ in range(20)]
+        a = bt.atr(bars, 14)
+        self.assertIsNone(a[13])
+        self.assertAlmostEqual(a[14], 2.0)
+        self.assertAlmostEqual(a[19], 2.0)
+
+    def test_levers_and_holdout(self):
+        self.assertEqual(bt.levers(dict(bt.DEFAULTS)), {})
+        self.assertEqual(bt.levers(dict(bt.DEFAULTS, be_at=None, min_sl_pct=0.5)), {"be_at": None, "min_sl_pct": 0.5})
+        self.assertTrue(bt.touches_holdout({"end": None}))
+        self.assertTrue(bt.touches_holdout({"end": bt.parse_date("2025-01-01")}))
+        self.assertFalse(bt.touches_holdout({"end": bt.parse_date("2024-12-31", end=True)}))
+
+    def test_filter_reasons(self):
+        c = dict(CFG, min_trend_pct=7.0, d1_align=True, drop_doji=True, min_sl_pct=0.5)
+        st4, setup = {"dist": 6.0}, {"bias": "long"}
+        doji = [{"type": "Doji + Bullish Engulfing"}]
+        self.assertEqual(bt.filter_reasons(c, st4, setup, "short", doji, {"sl_dist_pct": 0.4}),
+                         ["trend", "d1", "doji", "min_sl"])
+        self.assertEqual(bt.filter_reasons(c, {"dist": 8.0}, setup, "long", doji + [{"type": "Bullish Engulfing"}],
+                                           {"sl_dist_pct": 0.6}), [])
+        self.assertEqual(bt.filter_reasons(c, {"dist": 8.0}, setup, None, [{"type": "Bullish Engulfing"}],
+                                           {"sl_dist_pct": 0.6}), ["d1"])
+
+
+class TestRisk(unittest.TestCase):
+    def test_max_dd_compounds(self):
+        import risk
+        self.assertAlmostEqual(risk.max_dd_pct([-1] * 9, 2.0), (1 - 0.98 ** 9) * 100)
+        self.assertAlmostEqual(risk.max_dd_pct([3, -1, -1, 3], 1.0), (1 - 0.99 ** 2) * 100)
+
+    def test_choose_risk_is_largest_safe_level(self):
+        import risk
+        rs = [3, -1, -1, -1, 3, -1, 3, -1, -1, 3] * 20
+        rb = risk.choose_risk(rs, sims=300)
+        ok = [lv["risk_pct"] for lv in rb["levels"] if lv["ok"]]
+        self.assertEqual(rb["chosen_risk_pct"], max(ok) if ok else None)
+        p95 = [lv["p95_dd_pct"] for lv in rb["levels"]]
+        self.assertEqual(p95, sorted(p95))  # same paths for every level -> monotone in risk
+
+    def test_win_is_tp_exit_only(self):
+        import report
+        mk = lambda reason, r: {"exit_reason": reason, "r_multiple": r, "gross_r": r, "pnl": r, "bars_held": 4,  # noqa: E731
+                                "sl_dist_pct": 1.0, "liq_flag": False}
+        g = report.group_stats([mk("TP", 3.0), mk("BE", 0.05), mk("SL", -1.0), mk("SL", -1.0)])
+        self.assertAlmostEqual(g["win_rate_pct"], 25.0)
+        self.assertAlmostEqual(g["profit_factor"], 3.05 / 2.0)
+        self.assertEqual(g["max_losing_streak"], 3)
+
+
 if __name__ == "__main__":
     unittest.main()

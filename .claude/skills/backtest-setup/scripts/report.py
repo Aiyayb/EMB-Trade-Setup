@@ -9,6 +9,8 @@ import math
 import os
 from datetime import datetime, timezone
 
+import risk
+
 ASSUMPTIONS = [
     "กฎทั้งหมดมาจาก skill trade-setup (Execution 1 Long / Execution 2 Short) ไม่มีการปรับพารามิเตอร์",
     "เดินทีละแท่ง 15m; ณ ปิดแท่ง 15m เห็นเฉพาะแท่ง 4H ที่ปิดแล้ว (ไม่มี look-ahead)",
@@ -21,14 +23,46 @@ ASSUMPTIONS = [
     "15m Trigger ต้องเกิดใน Entry Zone: อย่างน้อยหนึ่งแท่งในแพทเทิร์นแตะระดับ Fib 0.5 (อนุมานจากกฎ 4H ข้อ Q9)",
     "CHoCH-Retrace = 15m Wave นั้นเองทำ CHoCH ในทิศเทรด (ระหว่างจุดเริ่มถึงจุดจบ Wave) แล้วค่อย retrace — ไม่บังคับ บันทึกเป็น tag และแยกผลในรายงาน",
     "Entry = ราคาปิดแท่ง Trigger 15m; SL = low/high สุดของ pullback (ไม่มี buffer); TP = 3R; R, TP, BE คิดจากราคาปิด",
-    "Size = 2% ของ equity ปัจจุบัน ÷ R (compounding); ถือได้ครั้งละ 1 Trade; 1 Trade ต่อ 1 Wave 15m",
+    "Size = risk % ของ equity ปัจจุบัน ÷ R (compounding); ถือได้ครั้งละ 1 Trade; 1 Trade ต่อ 1 Wave 15m",
     "ในแท่งเดียวกันชนทั้ง SL และ TP/2R → นับ SL; BE มีผลจากแท่งถัดไปหลังแตะ 2R; ถ้าเปิดแท่งทะลุ SL จะ fill ที่ราคาเปิด",
     "ถือต่อจนชน SL/TP/BE แม้ 4H trend สลับ; Trade ที่ยังเปิดตอนข้อมูลหมดปิดที่ราคาปิดสุดท้าย (reason END)",
     "Fee และ slippage คิดทั้งขาเข้าและขาออก ทุกประเภท exit (รวม TP) → Trade ที่แพ้จะเสียมากกว่า 2% เล็กน้อย",
     "Leverage ใช้แค่ flag ว่า SL ไกลกว่าระยะ liquidation (100/leverage − 0.5%) ไม่มีผลต่อ PnL",
     "Regime ของ Trade = ระยะ EMA8–EMA200 บน 4H ตอนเข้า (3–5%, 5–10%, ≥10%) เพราะช่วง Sideway ไม่มี Trade โดยกฎ",
     "ข้อมูลก่อน --from ใช้ warm-up indicator เท่านั้น ไม่เปิด Trade; Trade ที่เปิดก่อน --to ถือต่อจนจบแม้เลย --to",
+    "Win = Trade ที่ปิดที่ TP เท่านั้น (BE และ SL ไม่นับเป็น Win); Profit Factor = R ที่ได้รวม ÷ R ที่เสียรวม หลังต้นทุน",
+    "Risk budget: สุ่ม Trade ของ run นี้ซ้ำ (bootstrap) 5,000 ชุด แล้วเลือก risk สูงสุดใน {0.5, 0.75, 1, 1.5, 2}% "
+    "ที่ Max Drawdown จริงและ Max Drawdown ที่ percentile 95 ต่ำกว่า 15% (docs/adr/0001)",
 ]
+
+LEVER_ASSUMPTIONS = {
+    "entry_tf": lambda v: f"Lever Entry Timeframe = {v}: Wave, Entry Zone, Trigger, CHoCH และ SL อ่านบน {v} "
+                          "ด้วยกฎเดิมทุกข้อ; เข้าเมื่อแท่ง {v} ปิด แต่บริหาร SL/TP/BE ทีละแท่ง 15m",
+    "sl_atr": lambda v: f"Lever SL buffer: SL = low/high สุดของ pullback ∓ {v} × ATR(14) (Wilder) ของ Entry Timeframe; "
+                        "TP ยังเป็น 3R จาก R ใหม่",
+    "be_at": lambda v: "Lever ไม่ใช้ Break-even: SL อยู่ที่เดิมจนชน SL หรือ TP",
+    "min_trend_pct": lambda v: f"Filter trend: ระยะ EMA8–EMA200 บน 4H ตอนเข้าต้อง ≥ {v}%",
+    "d1_align": lambda v: "Filter 1D: EMA26/50 ของแท่ง 1D ล่าสุดที่ปิดแล้วต้องชี้ทิศเดียวกับ 4H "
+                          "(ช่วง warm-up EMA50 บน 1D ≈ ถึงกลาง พ.ย. 2021 ไม่มี Trade)",
+    "drop_doji": lambda v: "Filter trigger: ข้าม Trade ที่ Trigger 15m มีแต่ Doji + Engulfing",
+    "min_sl_pct": lambda v: f"Filter SL: ข้าม Trade ที่ SL ห่างจาก entry < {v}% ของราคา",
+}
+FILTER_NOTE = ("Filter ไม่เปลี่ยน Trade ที่เหลือ: Trade ที่ถูกกรองยังเดินเป็นเงา (ใช้ Wave นั้นไปแล้ว และกันช่อง "
+               "1 Trade ที่เปิดอยู่จนกว่าจะปิด) แต่ไม่นับผล — ผลจึงเป็นเซตย่อยของ Variant ที่ไม่มี Filter")
+
+
+def assumptions(cfg):
+    lv = levers_of(cfg)
+    out = list(ASSUMPTIONS)
+    out += [LEVER_ASSUMPTIONS[k](v) for k, v in lv.items()]
+    if any(k in lv for k in ("min_trend_pct", "d1_align", "drop_doji", "min_sl_pct")):
+        out.append(FILTER_NOTE)
+    return out
+
+
+def levers_of(cfg):
+    import backtest
+    return backtest.levers(cfg)
 
 
 # ---------------------------------------------------------------- statistics
@@ -42,17 +76,22 @@ def r_drawdown(rs):
     return dd
 
 
-def group_stats(trades):
+def tp_exit(t):
+    return t["exit_reason"] == "TP"
+
+
+def group_stats(trades, is_win=tp_exit):
+    """Stats for a set of Trades. `is_win` defines a Win (EMA Pullback: a TP exit)."""
     n = len(trades)
     if not n:
         return {"trades": 0}
     rs = [t["r_multiple"] for t in trades]
-    wins = [t for t in trades if t["pnl"] > 0]
-    gain = sum(t["pnl"] for t in wins)
-    loss = -sum(t["pnl"] for t in trades if t["pnl"] <= 0)
+    wins = [t for t in trades if is_win(t)]
+    gain = sum(r for r in rs if r > 0)
+    loss = -sum(r for r in rs if r < 0)
     streak = worst = 0
     for t in trades:
-        streak = streak + 1 if t["pnl"] <= 0 else 0
+        streak = streak + 1 if not is_win(t) else 0
         worst = max(worst, streak)
     exits = {}
     for t in trades:
@@ -111,7 +150,7 @@ def sideway_share(states4, bars4, start_ms, end_ms):
     return {y: {k: (v / d["bars"] * 100 if k != "bars" else v) for k, v in d.items()} for y, d in sorted(out.items())}
 
 
-def summarize(trades, info, bars4, bars15, args):
+def summarize(trades, info, bars4, bars15, args, name=None):
     cfg = info["cfg"]
     start_ms = cfg["start"] if cfg["start"] is not None else bars15[0]["ts"]
     end_ms = cfg["end"] if cfg["end"] is not None else bars15[-1]["ts"]
@@ -125,6 +164,8 @@ def summarize(trades, info, bars4, bars15, args):
             "be_at_r": cfg["be_at"], "be_buffer_pct": cfg["be_buffer_pct"], "fee_pct": cfg["fee_pct"],
             "slippage_pct": cfg["slippage_pct"], "leverage_flag": cfg["leverage"], "zigzag": cfg["zigzag"],
             "file_4h": os.path.basename(args.get("file_4h", "")), "file_15m": os.path.basename(args.get("file_15m", "")),
+            "name": name or ("Baseline" if not levers_of(cfg) else "Variant"),
+            "entry_tf": cfg["entry_tf"], "levers": levers_of(cfg),
         },
         "equity": equity_stats(trades, cfg["balance"], start_t, end_t),
         "all": group_stats(trades),
@@ -134,9 +175,19 @@ def summarize(trades, info, bars4, bars15, args):
         "by_choch_retrace": by(trades, lambda t: "with CHoCH" if t["choch_retrace"] else "without CHoCH"),
         "by_trigger": by(trades, lambda t: t["trigger"].split(" | ")[0]),
         "by_exit": by(trades, lambda t: t["exit_reason"]),
+        "filtered": {"trades": len(info.get("skipped", [])),
+                     "by_reason": {k: len(v) for k, v in _group(info.get("skipped", []), lambda t: t["filtered"]).items()}},
+        "risk_budget": risk.choose_risk([t["r_multiple"] for t in trades]),
         "market_4h_by_year_pct": sideway_share(info["states4"], bars4, start_ms, end_ms),
-        "assumptions": ASSUMPTIONS,
+        "assumptions": assumptions(cfg),
     }
+
+
+def _group(items, key):
+    out = {}
+    for t in items:
+        out.setdefault(key(t), []).append(t)
+    return out
 
 
 # ---------------------------------------------------------------- HTML
@@ -291,7 +342,8 @@ def chart_card(svg_data, legend):
 
 def render_html(s, trades):
     run, eq, al = s["run"], s["equity"], s["all"]
-    title = f"Backtest {run['from']} → {run['to']} ({run['side']})"
+    title = f"{run['name']} {run['from']} → {run['to']} ({run['side']})"
+    rb = s["risk_budget"]
     tiles = [
         ("Trades", al["trades"]), ("Win rate", num(al.get("win_rate_pct"), 1, "%")),
         ("Expectancy (net)", num(al.get("expectancy_r"), 3, " R")),
@@ -299,14 +351,23 @@ def render_html(s, trades):
         ("Profit factor", num(al.get("profit_factor"), 2)),
         ("Equity", f"{num(eq['start_equity'], 0)} → {num(eq['final_equity'], 0)}"),
         ("CAGR", num(eq["cagr_pct"], 1, "%")), ("Max drawdown", num(eq["max_drawdown_pct"], 1, "%")),
+        ("Risk from DD budget", num(rb["chosen_risk_pct"], 2, "%") if rb["chosen_risk_pct"] else "none fits"),
     ]
     tiles_html = "".join(f"<div class='tile'><div class='k'>{esc(k)}</div><div class='v'>{esc(v)}</div></div>"
                          for k, v in tiles)
     parts = [f"<main><h1>{esc(title)}</h1>",
-             f"<p class='sub'>BTCUSDT · 4H trend + 15m entry · risk {run['risk_pct']}% · RR 1:{run['rr']:g} · "
-             f"BE at {run['be_at_r']:g}R (+{run['be_buffer_pct']}%) · fee {run['fee_pct']}% + slippage "
-             f"{run['slippage_pct']}% per side · created {esc(run['created'])}</p>",
-             f"<div class='tiles'>{tiles_html}</div>"]
+             f"<p class='sub'>BTCUSDT · 4H trend + {run['entry_tf']} entry · risk {run['risk_pct']}% · "
+             f"RR 1:{run['rr']:g} · "
+             + (f"BE at {run['be_at_r']:g}R (+{run['be_buffer_pct']}%)" if run["be_at_r"] is not None else "no BE")
+             + f" · fee {run['fee_pct']}% + slippage {run['slippage_pct']}% per side · created {esc(run['created'])}</p>",
+             "<p class='sub'>Levers: " + (esc(", ".join(f"{k}={v}" for k, v in run["levers"].items())) or "none (Baseline)")
+             + (f" · filtered (shadow) Trades: {s['filtered']['trades']} "
+                + esc(str(s['filtered']['by_reason'])) if s["filtered"]["trades"] else "") + "</p>",
+             f"<div class='tiles'>{tiles_html}</div>",
+             "<h2>Risk from the Max Drawdown budget</h2><p class='note'>Max Drawdown ของ Trade ชุดนี้ที่ risk แต่ละระดับ: "
+             "จริงตามลำดับเวลา และ percentile 95 จากการสุ่มซ้ำ 5,000 ชุด (ต้อง &lt; 15% ทั้งคู่)</p>" + table(rb["levels"], [
+                 ("Risk", lambda r: num(r["risk_pct"], 2, "%")), ("Realized DD", lambda r: num(r["realized_dd_pct"], 1, "%")),
+                 ("p95 DD", lambda r: num(r["p95_dd_pct"], 1, "%")), ("< 15%", lambda r: "✓" if r["ok"] else "✗")])]
 
     if trades:
         pts = [("start", run["balance"])] + [(t["exit_time_utc"], t["equity_after"]) for t in trades]
@@ -356,12 +417,12 @@ def render_html(s, trades):
             f"<body>{''.join(parts)}<script>{JS}</script></body></html>")
 
 
-def write_all(out, trades, info, bars4, bars15, args):
-    s = summarize(trades, info, bars4, bars15, args)
+def write_all(out, trades, info, bars4, bars15, args, name=None):
+    s = summarize(trades, info, bars4, bars15, args, name)
     with open(os.path.join(out, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(s, f, indent=2, ensure_ascii=False)
     with open(os.path.join(out, "assumptions.md"), "w", encoding="utf-8") as f:
-        f.write(f"# Assumptions — Backtest {s['run']['from']} → {s['run']['to']} ({s['run']['side']})\n\n")
+        f.write(f"# Assumptions — {s['run']['name']} {s['run']['from']} → {s['run']['to']} ({s['run']['side']})\n\n")
         f.write("## Parameters\n\n" + "\n".join(f"- `{k}`: {v}" for k, v in s["run"].items()) + "\n\n")
         f.write("## Rule interpretations\n\n" + "\n".join(f"{i}. {a}" for i, a in enumerate(s["assumptions"], 1)) + "\n")
     with open(os.path.join(out, "report.html"), "w", encoding="utf-8") as f:
