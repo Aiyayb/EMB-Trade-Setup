@@ -1,11 +1,15 @@
 # Trading Strategy
 
-The user's personal discretionary-turned-mechanical trading strategy (4H trend + 15m or 1H entry on BTCUSDT) and the backtest that replays it over historical candles.
+The user's mechanical trading strategies on BTCUSDT and the backtest that replays them over historical candles: EMA Pullback (4H trend + 15m entry; its Variant search failed) and Trend Breakout (4H trend-following, being designed).
 
-## Strategy
+## EMA Pullback
+
+**EMA Pullback**:
+The user's first strategy: in a 4H trend, wait for a pullback into the EMA Zone and enter on an Entry Timeframe Trigger inside the Entry Zone, with SL at the previous low/high and TP at 3R.
+_Avoid_: Execution strategy, the Setup, trade-setup (that is its skill)
 
 **Execution**:
-One of the two fixed step lists of the strategy — Execution 1 (Long) or Execution 2 (Short) — chosen by the 4H EMA26 vs EMA50.
+One of EMA Pullback's two fixed step lists — Execution 1 (Long) or Execution 2 (Short) — chosen by the 4H EMA26 vs EMA50.
 _Avoid_: Strategy mode, direction plan
 
 **Entry Timeframe**:
@@ -52,14 +56,44 @@ _Avoid_: Range, chop, consolidation
 The end of a Setup without a Trade — 4H EMA26/50 flips, the market turns Sideway, a new 4H Trigger replaces it, or the Entry Timeframe pullback retraces past 1.0.
 _Avoid_: Cancel, invalidation (for the whole Setup)
 
+## Trend Breakout
+
+**Trend Breakout**:
+The user's second strategy: 4H trend-following that enters on a breakout of a price channel and rides the trend with a trailing exit, taking Long and Short Trades on BTCUSDT perpetuals.
+_Avoid_: Donchian strategy, Turtle (those name its textbook ancestors)
+
+**Breakout**:
+A 4H candle that closes beyond the 20-candle Channel on the side the Side Filter allows; Trend Breakout's only entry signal.
+_Avoid_: Signal, Trigger (that is EMA Pullback's)
+
+**Channel**:
+The highest high and lowest low of the last N closed 4H candles — N = 20 for a Breakout, 10 for the Trailing Stop.
+_Avoid_: Donchian, range, box
+
+**Side Filter**:
+Trend Breakout takes Long Breakouts only above the 4H EMA200 and Short Breakouts only below it.
+_Avoid_: Trend filter, bias
+
+**Initial Stop**:
+The stop placed at entry, 2 × ATR(14) of 4H away from the entry price; it defines the Trade's R.
+_Avoid_: SL (EMA Pullback's term), hard stop
+
+**Trailing Stop**:
+Trend Breakout's only exit: the more protective of the Initial Stop and the opposite 10-candle Channel, moved only toward profit and only when a 4H candle closes.
+_Avoid_: Trailing exit, chandelier, Break-even
+
+**Funding**:
+The periodic payment between Long and Short holders of a perpetual future; every Funding event a Trade is open across is paid or received and counts as a cost.
+_Avoid_: Swap, carry, financing
+
 ## Trade & money management
 
 **Trade**:
-A position opened at the close of an Entry Timeframe Trigger candle, with SL at the previous low/high (a Variant may add a buffer) and TP at 3R; at most one Trade per Wave and one open Trade at a time.
+One position of one strategy, from entry to exit, sized so that losing R costs the chosen risk % of equity; each strategy holds at most one open Trade at a time (EMA Pullback also at most one per Wave).
 _Avoid_: Order, position (as a count)
 
 **R**:
-The distance between entry and SL of a Trade; results are measured in multiples of it.
+The distance between a Trade's entry and its first stop — the SL in EMA Pullback, the Initial Stop in Trend Breakout; results are measured in multiples of it.
 _Avoid_: Risk unit, stop distance
 
 **Break-even (BE)**:
@@ -67,15 +101,19 @@ Moving a Trade's SL to entry plus a small buffer on the profit side once price r
 _Avoid_: Trailing stop
 
 **Win**:
-A Trade that exits at its TP; a Break-even or SL exit is a non-win, and win rate is Wins over all Trades.
-_Avoid_: Profitable trade (a BE exit can be slightly profitable)
+A Trade that closes with net R above zero after fees, slippage and Funding; win rate is Wins over all Trades. In EMA Pullback a Break-even exit nets below zero, so its Wins are exactly its TP exits.
+_Avoid_: Profitable trade, winner (before costs)
 
 **RR**:
-The planned ratio of a Trade's TP distance to its R, fixed at 1:3 — not the realized ratio of average win to average loss.
-_Avoid_: Payoff ratio (that is the realized one)
+The planned ratio of a Trade's TP distance to its R — fixed at 1:3 in EMA Pullback; Trend Breakout has no TP and so no RR.
+_Avoid_: Payoff (that is the realized ratio)
+
+**Payoff**:
+The realized ratio of average winning R to average losing R over a set of Trades; reported for every strategy, targeted by none.
+_Avoid_: RR, reward-to-risk (those are planned)
 
 **Profit Factor (PF)**:
-Gross winning R divided by gross losing R over a set of Trades, measured net of fees and slippage.
+Gross winning R divided by gross losing R over a set of Trades, measured net of fees, slippage and Funding.
 _Avoid_: Gain ratio
 
 **Max Drawdown**:
@@ -97,7 +135,7 @@ An interpretation the backtest makes where the user's rules are silent; every Ba
 _Avoid_: Setting, parameter
 
 **Baseline**:
-The strategy exactly as defined by Execution 1/2, kept unchanged as the reference every Variant is compared against.
+A strategy's reference rule set, kept unchanged, that its Variants are compared against — Execution 1/2 for EMA Pullback, the textbook Breakout / Initial Stop / Trailing Stop rules for Trend Breakout.
 _Avoid_: Original, v1
 
 **Variant**:
@@ -105,19 +143,19 @@ The Baseline with a named set of changes applied; it is a candidate until it pas
 _Avoid_: Version, new strategy
 
 **Lever**:
-One named, separately testable change to the Baseline — a Filter, the Entry Timeframe, SL placement, or the Break-even rule; a Variant is a set of Levers.
+One named, separately testable change to a strategy's Baseline; a Variant is a set of Levers.
 _Avoid_: Tweak, setting, parameter
 
 **Filter**:
-A Lever that only removes Trades the Baseline would take, leaving entries, SL and TP of the remaining Trades unchanged.
+A Lever that only removes Trades the Baseline would take, leaving the remaining Trades unchanged.
 _Avoid_: Condition, rule (too broad)
 
 **Search Budget**:
-The cap on how many Variants may be run on the Tuning Period (20) before the Variant approach is declared failed.
+The cap on how many Variants of one strategy may be run on the Tuning Period (20) before that strategy's Variant approach is declared failed.
 _Avoid_: Iterations, attempts
 
 **Acceptance Bar**:
-The results a Variant must reach, net of costs, to be adopted: Max Drawdown below 15% with RR 1:3 and PF of at least 1.5; PF 3 is the Stretch Target, and win rate is reported but not targeted.
+The results a Variant must reach, net of costs, to be adopted: for Trend Breakout, PF of at least 2 and Max Drawdown below 15% at the risk the drawdown budget allows, with at least 100 Trades on the Tuning Period and each side (Long, Short) profitable on its own; win rate and Payoff are reported but not targeted. (EMA Pullback's bar was PF 1.5 with RR 1:3.)
 _Avoid_: KPI, goal
 
 **Finalist**:
