@@ -39,7 +39,7 @@ The check reports:
 - whether this candle is a Breakout; if so, the entry, Initial Stop, R and position size,
 - if not, the exact close the next candle needs.
 
-With `--open` it replays the Trailing Stop from the Breakout candle (the open time, in UTC) to now, and warns if the stop has already been hit.
+Trailing Stops are shown side by side for the **Baseline** (10-candle Channel) and **T05** (best close since entry ∓ 3 × ATR, read from `VARIANTS`), because both are being paper-traded. Entry and Initial Stop are the same for both. With `--open` it replays both Trailing Stops from the Breakout candle (the open time, in UTC) to now, and warns if a stop has already been hit.
 
 **Always refresh data first**: `python fetch_btc_data.py --tf 15m 4H 1D` and `python fetch_funding.py`. The check warns when data is more than 4 h old. It uses the same rule functions as the backtest (`engine.py`), and a test confirms every backtest entry is a Breakout the check sees at that candle.
 
@@ -92,11 +92,13 @@ python .claude/skills/trend-breakout/scripts/variants.py --holdout <ID>  # the s
 
 - **Baseline** on the Tuning Period: 165 Trades, PF 1.72, Payoff 2.52, win 40.6%, +0.33R per Trade, risk budget 0.5%, MTM DD 6.5%. It fails PF ≥ 2.
 - **Registered run: 3 of 11 Variants pass.** T05 (Chandelier 3 ATR, PF 2.18), T07 (1D EMA50 agrees, PF 2.15), T08 (ADX ≥ 20, PF 2.10).
-- **Finalist by rule: T05.** The Holdout run is pending the user's decision.
-- **After a pass:**
-  - update this skill's rules to the Finalist,
-  - paper-trade for ≥ 30 Trades or 3 months, whichever is later (about 7 months at ~50 Trades a year),
-  - compare live win rate, Payoff and R per Trade against the backtest.
+- **Finalist T05 failed the Holdout Period** (run 2026-09-30, 2025-01 → 2026-09):
+  - PF 1.47 vs 2.18 on the Tuning Period,
+  - 87 Trades, Payoff 2.52, +0.26R per Trade,
+  - Long / Short PF 1.48 / 1.45, mark-to-market DD 6.1%, CAGR 6.2% at 0.5% risk.
+
+  It is profitable after costs but below the PF 2 target. The Holdout Period is used up (`docs/holdout-ledger.json`), and there is no retry with the runner-up (docs/adr/0002 Outcome).
+- **The rules above remain the Baseline.** None of the Variants has been adopted. The next step (forward-test on new data, lower the target, or redesign) is the user's decision.
 
 ## Verifying the engine
 

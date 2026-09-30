@@ -1,0 +1,31 @@
+[
+  {
+    "strategy": "Trend Breakout",
+    "id": "T05",
+    "label": "Chandelier 3 ATR",
+    "levers": {
+      "chandelier_atr": 3.0
+    },
+    "run_at": "20260930-213551",
+    "risk_pct": 0.5,
+    "tuning": {
+      "trades": 141,
+      "win_rate_pct": 36.17021276595745,
+      "profit_factor": 2.1809205143490216,
+      "payoff": 3.8486832606159203,
+      "pf_long": 3.226899235656964,
+      "pf_short": 1.1862165540352534,
+      "max_drawdown_pct": 6.356890908726798
+    },
+    "holdout": {
+      "trades": 87,
+      "win_rate_pct": 36.7816091954023,
+      "profit_factor": 1.46768323504892,
+      "payoff": 2.522580560240331,
+      "pf_long": 1.479131335586355,
+      "pf_short": 1.4533119746680445,
+      "max_drawdown_pct": 6.050517439970782
+    },
+    "passed": false
+  }
+]

@@ -25,6 +25,21 @@ Later rounds added the following:
 - **Pre-registered Levers:** eleven (T01–T11).
 - **The old strategy is renamed EMA Pullback.**
 
+## Outcome (2026-09-30)
+
+Of the 11 registered Variants, 3 passed on the Tuning Period: T05 Chandelier 3 ATR (PF 2.18), T07 1D EMA50 (2.15) and T08 ADX ≥ 20 (2.10). The rule made T05 the Finalist. It was run once on the Holdout Period (2025-01-01 → 2026-09-26) at 0.5% risk and **failed**:
+
+| | Tuning Period | Holdout Period |
+|---|---|---|
+| Trades | 141 | 87 |
+| PF | 2.18 | 1.47 |
+| Payoff | 3.85 | 2.52 |
+| Long / Short PF | 3.23 / 1.19 | 1.48 / 1.45 |
+| Mark-to-market DD | 6.4% | 6.1% |
+| Expectancy per Trade | +0.58R | +0.26R |
+
+On the Holdout it was still profitable after all costs (CAGR 6.2%). Per ADR 0001, the Variant approach for Trend Breakout does not retry with the runner-up. The Holdout Period is now used (`docs/holdout-ledger.json`), so any further strategy work has no clean test period until new data accumulates after 2026-09.
+
 ## Considered Options
 
 - **Keep RR 1:3 and 2% risk as the user first asked:** rejected. Both conflict with PF 2 and DD < 15% on the evidence above.

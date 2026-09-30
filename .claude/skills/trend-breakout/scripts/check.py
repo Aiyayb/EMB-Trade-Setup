@@ -1,6 +1,6 @@
 """
 check.py - Trend Breakout live chart check at the last closed 4H candle (or --until), using the exact rule
-functions the backtest uses (engine.py).
+functions the backtest uses (engine.py). Trailing Stops are shown for the Baseline and for T05 side by side.
 
   python check.py                                        # is there a Breakout now? levels for the next candle
   python check.py --equity 5000 --risk 0.5               # with position size
@@ -15,6 +15,17 @@ import sys
 import time
 
 import engine as E
+from variants import VARIANTS
+
+# Entry and Initial Stop are the same for both; only the Trailing Stop differs.
+# T05 failed the Holdout Period (PF 1.47) and is being paper-traded next to the Baseline.
+RULES = [("Baseline", dict(E.DEFAULTS)), ("T05", dict(E.DEFAULTS, **VARIANTS["T05"][1]))]
+
+
+def trail_desc(c):
+    if c["chandelier_atr"] is not None:
+        return f"best close since entry ∓ {c['chandelier_atr']:g} × ATR(14)"
+    return f"opposite {c['exit_n']}-candle Channel"
 
 
 def fmt(v, d=1):
@@ -62,10 +73,10 @@ def main():
         r = abs(b["c"] - stop)
         print(f"\n  ✅ BREAKOUT {side.upper()} on this candle → entry at close {fmt(b['c'])}")
         print(f"     Initial Stop {fmt(stop)}  (R = {fmt(r)} = {r / b['c'] * 100:.2f}% of price)")
-        t = {"d": d, "stop": stop, "best_close": b["c"]}
-        E.trail(ind, bars4, h, t, cfg)
-        if t["stop"] != stop:
-            print(f"     the 10-candle Channel already lifts the stop to {fmt(t['stop'])}")
+        for name, c in RULES:
+            t = {"d": d, "stop": stop, "best_close": b["c"]}
+            E.trail(ind, bars4, h, t, c)
+            print(f"     Trailing Stop {name}: {trail_desc(c)} → after this close {fmt(t['stop'])}")
         if a.equity:
             pos = E.position(b["c"], stop, a.equity, dict(cfg, risk_pct=a.risk))
             print(f"     size at {a.risk}% of {a.equity:,.0f}: {pos['units']:.4f} BTC · notional {pos['notional']:,.0f}"
@@ -89,20 +100,25 @@ def main():
             ap.error(f"no 4H candle opens at {a.since} UTC")
         d = 1 if a.open == "long" else -1
         stop0 = a.entry - d * cfg["stop_atr"] * ind["atr"][k]
-        t = {"d": d, "stop": stop0, "best_close": bars4[k]["c"]}
-        E.trail(ind, bars4, k, t, cfg)
-        for j in range(k + 1, h + 1):
-            in_force = t["stop"]
-            if (d == 1 and bars4[j]["l"] <= in_force) or (d == -1 and bars4[j]["h"] >= in_force):
-                print(f"\n  ⚠ the stop {fmt(in_force)} was touched during the 4H candle {bars4[j]['t']} — "
-                      "by these rules the Trade is already closed")
-                break
-            E.trail(ind, bars4, j, t, cfg)
         r = abs(a.entry - stop0)
         cur = b["c"]
-        print(f"\n  open {a.open.upper()} from {fmt(a.entry)} · Initial Stop {fmt(stop0)} (R {fmt(r)})")
-        print(f"  Trailing Stop now {fmt(t['stop'])} · price {fmt(cur)} · open {d * (cur - a.entry) / r:+.2f}R · "
-              f"locked {d * (t['stop'] - a.entry) / r:+.2f}R")
+        print(f"\n  open {a.open.upper()} from {fmt(a.entry)} · Initial Stop {fmt(stop0)} (R {fmt(r)}) · "
+              f"price {fmt(cur)} · open {d * (cur - a.entry) / r:+.2f}R")
+        for name, c in RULES:
+            t = {"d": d, "stop": stop0, "best_close": bars4[k]["c"]}
+            E.trail(ind, bars4, k, t, c)
+            hit = None
+            for j in range(k + 1, h + 1):
+                if (d == 1 and bars4[j]["l"] <= t["stop"]) or (d == -1 and bars4[j]["h"] >= t["stop"]):
+                    hit = (bars4[j]["t"], t["stop"])
+                    break
+                E.trail(ind, bars4, j, t, c)
+            if hit:
+                print(f"  {name}: ⚠ stop {fmt(hit[1])} was touched during the 4H candle {hit[0]} — "
+                      "by these rules the Trade is already closed")
+            else:
+                print(f"  {name}: Trailing Stop now {fmt(t['stop'])} ({trail_desc(c)}) · "
+                      f"locked {d * (t['stop'] - a.entry) / r:+.2f}R")
     print("\nThis applies your Trend Breakout rules to the data; it is not financial advice.")
 
 

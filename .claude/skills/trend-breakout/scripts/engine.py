@@ -22,7 +22,8 @@ from datetime import datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", "..", "..", ".."))
-sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "..", "backtest-setup", "scripts")))
+# appended, not prepended: backtest-setup also has backtest.py / variants.py, and this skill's own must win
+sys.path.append(os.path.normpath(os.path.join(HERE, "..", "..", "backtest-setup", "scripts")))
 import risk  # noqa: E402
 
 M15 = 15 * 60 * 1000
